@@ -1,0 +1,7 @@
+pyrogram
+tgcrypto
+uvloop
+motor
+pytgcalls
+APScheduler
+python-dotenv
