@@ -1,34 +1,41 @@
+import json
+import os
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# This is a simplified handler. In production, use a Conversation state manager 
-# (like pyromod) to wait for the user's phone number and OTP replies.
+@Client.on_message(filters.document & filters.private)
+async def handle_session_file(client, message):
+    file_name = message.document.file_name
+    
+    if file_name.endswith((".json", ".session")):
+        await message.reply_text("📥 Processing session file...")
+        file_path = await message.download()
+        
+        try:
+            with open(file_path, "r") as f:
+                data = f.read()
+                
+            # If it's a JSON file, extract the session string
+            if file_name.endswith(".json"):
+                json_data = json.loads(data)
+                session_string = json_data.get("session_string")
+            else:
+                # If it's a raw .session file
+                session_string = data.strip()
+                
+            if not session_string:
+                return await message.reply_text("❌ No valid session string found in the file.")
 
-@Client.on_message(filters.command("login") & filters.private)
-async def login_command(client, message):
-    # Premium emoji buttons require the bot to be able to send them.
-    # Format: InlineKeyboardButton(text="<emoji> Login", callback_data="...")
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📱 Login via Number", callback_data="login_phone")],
-        [InlineKeyboardButton("📁 Upload .session", callback_data="login_session")]
-    ])
-    
-    await message.reply_text(
-        "**Account Manager**\nSelect an option to add an assistant account:",
-        reply_markup=keyboard
-    )
-
-# The OTP logic requires initializing a new Pyrogram client dynamically:
-async def process_otp_login(api_id, api_hash, phone_number):
-    temp_client = Client(":memory:", api_id=api_id, api_hash=api_hash)
-    await temp_client.connect()
-    
-    sent_code = await temp_client.send_code(phone_number)
-    # At this point, prompt the user for the OTP sent to their Telegram app.
-    # Once received:
-    # await temp_client.sign_in(phone_number, sent_code.phone_code_hash, user_otp)
-    
-    # Export string session to save in MongoDB
-    # session_string = await temp_client.export_session_string()
-    # await temp_client.disconnect()
-    # return session_string
+            # Test the session string by starting a temporary client
+            temp_client = Client(":memory:", session_string=session_string, api_id=os.getenv("API_ID"), api_hash=os.getenv("API_HASH"))
+            await temp_client.start()
+            me = await temp_client.get_me()
+            await temp_client.stop()
+            
+            await message.reply_text(f"✅ **Session Valid!**\nSuccessfully logged in as: {me.first_name}")
+            # Here: Save this session_string to MongoDB tied to the user's account
+            
+        except Exception as e:
+            await message.reply_text(f"❌ **Invalid Session File:**\n`{e}`")
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
