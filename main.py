@@ -1,3 +1,4 @@
+# main.py
 import asyncio
 import os
 import uvloop
@@ -5,60 +6,58 @@ from pyrogram import Client, idle
 from pytgcalls import PyTgCalls
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Import database connection
+from database.mongo import db
 
-# Safely fetch API credentials
+load_dotenv()
 API_ID = int(os.getenv("API_ID", 0))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-SESSION_STRING = os.getenv("SESSION_STRING")
 
-# 1. Initialize Bot Client (handles buttons, UI, admin commands)
-app = Client(
-    "BotClient",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    plugins=dict(root="plugins") # Automatically loads all files in the plugins folder
-)
-
-# 2. Initialize Assistant Client (Userbot via String Session for VC & Group Joining)
-assistant = Client(
-    "AssistantClient",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    session_string=SESSION_STRING
-)
-
-# 3. Initialize Voice Chat client (Attached to the Assistant account)
-call_py = PyTgCalls(assistant)
+# Store running clients globally so other plugins can access them
+app = Client("BotClient", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, plugins=dict(root="plugins"))
+active_assistants = {}
+active_calls = {}
 
 async def main():
-    print("Starting Bot...")
+    print("Starting Bot UI...")
     await app.start()
     
-    print("Starting Assistant...")
-    await assistant.start()
+    print("Fetching Assistant accounts from MongoDB...")
+    # Fetch all stored sessions from the 'assistants' collection
+    stored_accounts = db.assistants.find({})
     
-    # FIX for "Peer id invalid" errors: 
-    # This forces Pyrogram to read all chats the assistant is in and memorize their Access Hashes.
-    print("Caching chats to prevent Peer ID errors (this may take a few seconds)...")
-    try:
-        async for _ in assistant.get_dialogs():
-            pass
-    except Exception as e:
-        print(f"Dialog sync warning: {e}")
-    
-    print("Starting PyTgCalls...")
-    await call_py.start()
-    
+    async for account in stored_accounts:
+        session = account.get("session_string")
+        if not session: continue
+            
+        # Create a unique pyrogram client for this session
+        ass_client = Client(
+            f"Assistant_{account['_id']}",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            session_string=session
+        )
+        
+        try:
+            await ass_client.start()
+            me = await ass_client.get_me()
+            
+            # Attach VC client
+            call_client = PyTgCalls(ass_client)
+            await call_client.start()
+            
+            # Store in global dictionaries using their user ID as the key
+            active_assistants[me.id] = ass_client
+            active_calls[me.id] = call_client
+            print(f"✅ Assistant [{me.first_name}] online.")
+            
+        except Exception as e:
+            print(f"❌ Failed to start an assistant: {e}")
+
     print("✅ System Online. Press CTRL+C to stop.")
     await idle()
 
 if __name__ == "__main__":
-    # uvloop must be initialized BEFORE the asyncio loop starts for Python 3.12+
     uvloop.install()
-    
-    # Run the main async loop
     asyncio.run(main())
